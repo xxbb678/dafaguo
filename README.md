@@ -44,6 +44,55 @@
 
     bash <(curl -fsSL https://raw.githubusercontent.com/xxbb678/dafaguo/main/install.sh) update
 
+## 多账号分时启动
+
+多账号功能由 `multi-account.sh` 单独管理，不修改现有的 `install.sh`、`start.sh` 或单账号目录。每个账号都有独立的环境文件、每日日程、日志、PID、Firefox profile 和运行状态。
+
+先为每个账号准备环境文件，例如 `account-a.env`：
+
+```bash
+EMAIL='账号邮箱'
+PASSWORD='账号密码'
+TG_BOT_TOKEN='可选的机器人 token'
+TG_CHAT_ID='可选的 chat id'
+NOTIFY_NAME='账号 A'
+PROXY='可选代理'
+NH_WAIT='30'
+```
+
+环境文件应只允许当前用户读取：
+
+```bash
+chmod 600 account-a.env
+```
+
+添加账号并设置每日启动时间：
+
+```bash
+./multi-account.sh add account-a 06:30 account-a.env
+./multi-account.sh add account-b 08:15 account-b.env
+```
+
+常用命令：
+
+```bash
+./multi-account.sh start account-a       # 立即启动指定账号
+./multi-account.sh stop account-a        # 停止指定账号
+./multi-account.sh status account-a      # 查看单个账号状态
+./multi-account.sh status                # 查看全部账号状态
+./multi-account.sh delete account-a      # 停止并删除账号及其独立数据
+./multi-account.sh install-timers         # 安装并启用所有账号的用户级定时器
+./multi-account.sh remove-timers          # 停用并移除多账号定时器
+```
+
+账号数据默认保存在 `~/.local/share/dafaguo-multi/accounts/<账号名>/`。环境文件会复制为权限 `600` 的 `account.env`，命令输出和 systemd 单元均不会包含密码。账号名只允许字母、数字、下划线和连字符，防止路径穿越。
+
+`install-timers` 使用 systemd 用户级定时器。若注销后仍需执行，可按系统配置启用 linger：
+
+```bash
+loginctl enable-linger "$USER"
+```
+
 ## 环境要求
 
 - Linux（测试于 Debian/Ubuntu），需能访问目标站点
