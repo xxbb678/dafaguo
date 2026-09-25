@@ -23,6 +23,9 @@ usage() {
   multi-account.sh set-proxy <账号名>               # 清除账号代理
   multi-account.sh status [账号名]
   multi-account.sh list                    # 列出全部账号
+  multi-account.sh watch [账号名...]        # 收益看护：N 分钟(默认5)无收益自动重启
+  multi-account.sh install-watch-timers    # 配置每分钟收益看护 cron
+  multi-account.sh remove-watch-timers     # 关闭收益看护 cron
   multi-account.sh install-timers
   multi-account.sh remove-timers
 EOF
@@ -307,6 +310,97 @@ list_accounts() {
   return 0
 }
 
+# ═══════════ 收益看护：N 分钟无收益自动重启 ═══════════
+# 收益信号 = 当日日志里“历劫归来”行（每完成一轮广告、余额入账即记录）。
+# 超过 DAFAGUO_NO_GAIN_MINUTES（默认 5）分钟没有新收益 → 自动 restart 该账号。
+NO_GAIN_MINUTES=${DAFAGUO_NO_GAIN_MINUTES:-5}
+
+# 返回账号当日日志最后一次“历劫归来”的 epoch 秒；无记录返回 0
+last_gain_epoch() {
+  local dir=$1 log last ts
+  log="$dir/logs/$(date +%F).log"
+  [[ -f "$log" ]] || { echo 0; return 0; }
+  last=$(grep -F '历劫归来' "$log" | tail -1)
+  [[ -n "$last" ]] || { echo 0; return 0; }
+  ts=$(printf '%s\n' "$last" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}' | head -1)
+  if [[ -n "$ts" ]] && date -d "$ts" +%s 2>/dev/null; then
+    return 0
+  fi
+  echo 0
+}
+
+watch_account() {
+  local name=${1:-} dir pid_file pid log last now age
+  require_account "$name"
+  dir=$(account_dir "$name")
+  pid_file="$dir/run.pid"
+  # 未运行：不在这里补启动，交给每日定时器；仅当进程意外死亡时自恢复
+  if [[ ! -f "$pid_file" ]]; then
+    printf 'watch[%s]: 未运行（无 PID 文件），交由每日定时启动\n' "$name"
+    return 0
+  fi
+  read -r pid < "$pid_file" || true
+  if ! ([[ ${pid:-} =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null); then
+    printf 'watch[%s]: 进程已死 (PID %s)，自动重启\n' "$name" "${pid:-unknown}"
+    rm -f "$pid_file"
+    start_account "$name"
+    return 0
+  fi
+  last=$(last_gain_epoch "$dir")
+  if (( ! last )); then
+    printf 'watch[%s]: 今日日志尚无“历劫归来”收益记录，跳过\n' "$name"
+    return 0
+  fi
+  now=$(date +%s)
+  age=$(( now - last ))
+  if (( age >= NO_GAIN_MINUTES * 60 )); then
+    printf 'watch[%s]: 已 %d 分钟无收益(超过 %d 分钟)，自动重启\n' \
+      "$name" "$(( age / 60 ))" "$NO_GAIN_MINUTES"
+    restart_account "$name"
+  else
+    printf 'watch[%s]: 正常，最近收益于 %d 分钟前\n' "$name" "$(( age / 60 ))"
+  fi
+}
+
+watch_batch() {
+  local name found=0
+  if (( $# > 0 )); then
+    for name in "$@"; do
+      account_exists "$name" || { printf '错误：账号不存在：%s（跳过）\n' "$name" >&2; found=1; continue; }
+      recommended=1
+      watch_account "$name"
+    done
+    return 0
+  fi
+  [[ -d "$ACCOUNTS_DIR" ]] || { printf '尚未添加账号\n'; return 0; }
+  for dir in "$ACCOUNTS_DIR"/*; do
+    [[ -d "$dir" ]] || continue
+    found=1
+    watch_account "${dir##*/}"
+  done
+  (( found )) || printf '尚未添加账号\n'
+  return 0
+}
+
+# 配置每分钟看护 cron
+install_watch_cron() {
+  local tag="# DAFAGUO-V1-WATCH"
+  local cronline="* * * * * DAFAGUO_MULTI_HOME=$MULTI_HOME bash \"$SCRIPT_DIR/multi-account.sh\" watch >> \"$MULTI_HOME/cron.log\" 2>&1 $tag"
+  ( crontab -l 2>/dev/null | grep -vF "$tag"; printf '%s\n' "$cronline" ) | crontab -
+  if crontab -l | grep -qF "$tag"; then
+    printf '已配置每分钟收益看护 cron (无收益 %d 分钟自动重启)\n' "$NO_GAIN_MINUTES"
+  else
+    printf 'cron 写入失败，可手动执行: %s watch\n' "$SCRIPT_DIR/multi-account.sh"
+  fi
+}
+
+# 关闭看护 cron
+remove_watch_cron() {
+  local tag="# DAFAGUO-V1-WATCH"
+  crontab -l 2>/dev/null | grep -vF "$tag" | crontab - || true
+  printf '已关闭收益看护 cron\n'
+}
+
 reload_systemd() {
   if [[ $SYSTEMD_DIR == "$HOME/.config/systemd/user" ]] && command -v systemctl >/dev/null 2>&1; then
     systemctl --user daemon-reload >/dev/null 2>&1 || true
@@ -576,6 +670,9 @@ case "$command" in
   set-proxy|proxy) set_proxy "$@" ;;
   status) status_accounts "$@" ;;
   list) list_accounts "$@" ;;
+  watch) if (( $# > 0 )); then watch_batch "$@"; else watch_batch; fi ;;
+  install-watch-timers) install_watch_cron ;;
+  remove-watch-timers) remove_watch_cron ;;
   install-timers) install_timers "$@" ;;
   remove-timers) remove_timers "$@" ;;
   -h|--help|help|'') usage ;;
