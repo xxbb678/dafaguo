@@ -280,6 +280,29 @@ def ensure_logged_in(page):
 # ════════════════════════════════════════════════════════════════════
 # 主战场：浏览器纯物理挂机循环
 # ════════════════════════════════════════════════════════════════════
+def accept_privacy_gate(page):
+    """NeoHeberg 隐私政策/CGU 同意墙（2026-10-05 起新增）。
+    已登录账号会被拦在 /account/cgu?next=/shop/ads，必须点「J'accepte the Privacy Policy」
+    才能进广告场。旧 cookie-同意处理只认 Consent/accepte 等短词，匹配不到这句长文案。
+    应放在读余额之前调用，否则 start_balance 会被记成 0。"""
+    try:
+        clicked = page.run_js("""
+            (() => {
+                const btns = Array.from(
+                    document.querySelectorAll('button, a[role=button], input[type=button]')
+                );
+                const b = btns.find(x => /accept/i.test((x.innerText||'') + ' ' + (x.value||'') + ' ' + (x.textContent||'')));
+                if (b) { b.click(); return 'clicked'; }
+                return 'no_button';
+            })()
+        """)
+        log.info(f"同意墙按钮点击结果: {clicked}")
+        return clicked == 'clicked'
+    except Exception as e:
+        log.warning(f"同意墙点击异常: {e}")
+        return False
+
+
 def main():
     state = load_state()
 
@@ -320,6 +343,19 @@ def main():
             log.error("❌ 登录失败，脚本退出。")
             sys.exit(1)
 
+        # 隐私政策/CGU 同意墙必须在读余额之前处理，否则首页被墙盖住读到余额 0，
+        # start_balance 会被错误记成 0。
+        for _attempt in range(3):
+            _u = page.url or ""
+            if "/account/cgu" in _u or "/cgu" in _u or page.ele('text:Politique de confidentialité'):
+                log.info("📋 检测到隐私政策/CGU 同意墙，先点接受再读余额...")
+                accept_privacy_gate(page)
+                time.sleep(3)
+                page.get(ADS_URL)
+                time.sleep(3)
+            else:
+                break
+
         bal = get_balance_dom(page, wait=20)
         if state.get("start_balance") is None:
             state["start_balance"] = bal
@@ -348,23 +384,10 @@ def main():
                     
                     # 同意墙：NeoHeberg 2026-10-05 更新隐私政策后，已登录账号会被拦在
                     # /account/cgu?next=/shop/ads，必须点「J'accepte la Privacy Policy」才能进广告场。
-                    # 旧 cookie-同意处理只认 Consent/accepte 单词，匹配不到这句长文案，故单独处理。
+                    # 复用 accept_privacy_gate()（启动读余额前也调用了同一逻辑）。
                     if "/account/cgu" in curr_url or "/cgu" in curr_url or page.ele('text:Politique de confidentialité'):
                         log.info("📋 检测到隐私政策/CGU 同意墙，点接受继续...")
-                        try:
-                            clicked = page.run_js("""
-                                (() => {
-                                    const btns = Array.from(
-                                        document.querySelectorAll('button, a[role=button], input[type=button]')
-                                    );
-                                    const b = btns.find(x => /accept/i.test((x.innerText||'') + ' ' + (x.value||'') + ' ' + (x.textContent||'')));
-                                    if (b) { b.click(); return 'clicked'; }
-                                    return 'no_button';
-                                })()
-                            """)
-                            log.info(f"同意墙按钮点击结果: {clicked}")
-                        except Exception as e:
-                            log.warning(f"同意墙点击异常: {e}")
+                        accept_privacy_gate(page)
                         time.sleep(3)
                         page.get(ADS_URL)
                         time.sleep(3)
