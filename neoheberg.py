@@ -346,6 +346,30 @@ def main():
                     stuck_counter = 0
                     wait_for_cloudflare(page, timeout=15)
                     
+                    # 同意墙：NeoHeberg 2026-10-05 更新隐私政策后，已登录账号会被拦在
+                    # /account/cgu?next=/shop/ads，必须点「J'accepte la Privacy Policy」才能进广告场。
+                    # 旧 cookie-同意处理只认 Consent/accepte 单词，匹配不到这句长文案，故单独处理。
+                    if "/account/cgu" in curr_url or "/cgu" in curr_url or page.ele('text:Politique de confidentialité'):
+                        log.info("📋 检测到隐私政策/CGU 同意墙，点接受继续...")
+                        try:
+                            clicked = page.run_js("""
+                                (() => {
+                                    const btns = Array.from(
+                                        document.querySelectorAll('button, a[role=button], input[type=button]')
+                                    );
+                                    const b = btns.find(x => /accept/i.test((x.innerText||'') + ' ' + (x.value||'') + ' ' + (x.textContent||'')));
+                                    if (b) { b.click(); return 'clicked'; }
+                                    return 'no_button';
+                                })()
+                            """)
+                            log.info(f"同意墙按钮点击结果: {clicked}")
+                        except Exception as e:
+                            log.warning(f"同意墙点击异常: {e}")
+                        time.sleep(3)
+                        page.get(ADS_URL)
+                        time.sleep(3)
+                        continue
+                        
                     if "/login" in curr_url:
                         ensure_logged_in(page)
                         continue
